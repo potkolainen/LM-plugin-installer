@@ -1,0 +1,20 @@
+{
+  "name": "lms-plugin-plugin-installer",
+  "version": "0.1.0",
+  "description": "Install LM Studio plugins from a GitHub URL in one tool call.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "lms dev",
+    "push": "lms push",
+    "build": "tsc"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@lmstudio/sdk": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.8",
+    "typescript": "^5.4.0"
+  }
+}
