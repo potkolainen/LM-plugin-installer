@@ -275,3 +275,33 @@ export async function readPackageJson(dir: string): Promise<any | null> {
     return null;
   }
 }
+
+/**
+ * Look up the latest commit SHA of `ref` (branch / tag) on the remote repo
+ * without cloning. Returns null on any failure (network down, ref missing,
+ * git not installed, etc.) — callers should treat null as "unknown".
+ *
+ * If `ref` is omitted we resolve the remote HEAD.
+ */
+export async function getRemoteHeadSha(
+  gitCmd: string,
+  cloneUrl: string,
+  ref: string | undefined,
+  timeoutMs: number,
+  log: LogFn,
+): Promise<string | null> {
+  const args = ["ls-remote", cloneUrl];
+  if (ref) {
+    args.push(ref);
+  } else {
+    args.push("HEAD");
+  }
+  const res = await run(gitCmd, args, { timeoutMs, log });
+  if (res.code !== 0 || !res.stdout) return null;
+  // Output lines look like:  "<sha>\trefs/heads/main"  — first 40 chars are the SHA.
+  const firstLine = res.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
+  if (!firstLine) return null;
+  const sha = firstLine.split(/\s+/)[0]?.trim();
+  if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) return null;
+  return sha;
+}

@@ -1,124 +1,116 @@
 # LM Studio Plugin Installer
 
-A meta-plugin for LM Studio that installs other plugins automatically.
-**No AI / chat is involved** — the install pass runs on plugin startup based
-on the plugin's config and a drop folder.
+A meta-plugin for LM Studio that lets you manage other plugins by typing
+`--plugin` commands in the chat. The plugin exposes a small set of tools;
+when you type a command, your model calls the matching tool and the
+plugin runs `git clone` / `npm install` / `npm run build` / `lms dev -i -y`
+for you, streaming the output back into the chat.
 
-## Two ways to install a plugin
+> Why is a model involved? LM Studio's first-class "plugin owns the
+> chat" API (prediction loop handler) is still marked deprecated /
+> in-development in the SDK and makes plugins hang in "Initializing
+> plugin…". So this plugin uses the stable tools API: any modern
+> instruction-tuned model will faithfully route `--plugin …` commands
+> to the right tool.
 
-### 1. Add a GitHub URL
+---
 
-Open the plugin's **per-chat config** (the gear icon next to *Plugin
-Installer* in LM Studio). In the **Plugins to install** field, paste one
-URL per line:
+## Quick start
 
-```
-https://github.com/owner/repo
-https://github.com/owner/another-plugin/tree/dev
-yet-another/plugin
-```
+1. Make sure a model is loaded in LM Studio.
+2. Enable **Plugin Installer** on a chat.
+3. Type:
 
-Save the config. The next time the plugin loads (toggle it off → on, or
-run `lms dev -i -y` from this folder), each new or edited line is cloned,
-built, and registered with LM Studio.
+   ```
+   --plugin install https://github.com/potkolainen/LM-Multi-Online-Search-plugin
+   ```
 
-Accepted forms:
+4. The model will call the `plugin_install` tool. You'll see live
+   `git clone`, `npm install`, `npm run build`, `lms dev -i -y` output
+   in the tool's status area, then a summary in the chat.
+
+---
+
+## Commands
+
+| Command | Tool the model calls | What it does |
+| --- | --- | --- |
+| `--plugin help` | `plugin` | Print the built-in command list. |
+| `--plugin status` | `plugin_status` | For each installed plugin, run `git ls-remote` and compare to the stored sha. Table of local sha vs upstream sha and whether an update is available. |
+| `--plugin list` | `plugin_list` | List installed plugins (no network). |
+| `--plugin install <url> [<url> …]` | `plugin_install` | Clone, build, and register one or more plugins. |
+| `--plugin update` | `plugin_update` | Update every installed plugin that has new commits upstream. |
+| `--plugin update <owner/name>` | `plugin_update` | Update one specific plugin. |
+| `--plugin remove <owner/name>` | `plugin_remove` | Delete the plugin folder and forget it from state. |
+| `--plugin log [N]` | `plugin_log` | Print the last N lines (default 80) of the persistent log. |
+| `--plugin config` | `plugin` | Print current settings and resolved paths. |
+
+URL forms accepted by `install`:
 
 - `https://github.com/owner/repo`
 - `https://github.com/owner/repo/tree/<branch>` — branch / tag / commit
 - `git@github.com:owner/repo.git`
-- Shorthand: `owner/repo` or `github:owner/repo`
-- Lines starting with `#` are ignored
+- Shorthand `owner/repo` or `github:owner/repo`
 
-### 2. Drop a folder
+If your model is being clumsy about routing, you can also just ask in
+plain English: *"install the plugin at https://github.com/owner/repo"*
+or *"check if any of my plugins have updates"*. The tool descriptions
+are written to catch those phrasings too.
 
-Put a full plugin folder (one that already contains a `manifest.json`) into
-the **drop folder**. Default location:
+---
+
+## What you'll see
+
+During an install/update the chat shows live status lines from the
+tool's `status` channel — every `git`, `npm`, and `lms` command and its
+output as it runs. When the command finishes, the model writes a
+summary into the message. A sample install:
 
 ```
-~/.lmstudio/plugin-installer/drop/<your-plugin>/
+$ --plugin install https://github.com/potkolainen/LM-Multi-Online-Search-plugin
+
+[potkolainen/LM-Multi-Online-Search-plugin] $ git clone --depth 1 …
+[potkolainen/LM-Multi-Online-Search-plugin] Cloning into '…' …
+[potkolainen/LM-Multi-Online-Search-plugin] $ npm install --no-audit --no-fund
+[potkolainen/LM-Multi-Online-Search-plugin] added 42 packages in 6s
+[potkolainen/LM-Multi-Online-Search-plugin] $ npm run build
+[potkolainen/LM-Multi-Online-Search-plugin] $ lms dev -i -y
+[potkolainen/LM-Multi-Online-Search-plugin] dev server listening on …
+
+install done — installed: 1, updated: 0, skipped: 0, failed: 0
+  ✓ https://github.com/potkolainen/LM-Multi-Online-Search-plugin -> potkolainen/LM-Multi-Online-Search-plugin
 ```
 
-On startup the plugin scans the drop folder, and for every subfolder that
-looks like an LM Studio plugin it runs `npm install` + `npm run build`
-(if applicable) then `lms dev -i -y` to register it.
+Failures include the failing step name and the last several lines of
+its terminal output. A persistent copy of every line lives at
+`<stagingDir>/install.log` (default
+`~/.lmstudio/extensions/.installer/install.log`). Tail it with
+`--plugin log` or any external `tail -f`.
 
-Edits to `manifest.json` or `package.json` inside the dropped folder will
-trigger a re-install on the next plugin reload.
+---
 
-## State & de-duplication
-
-A small `installer-state.json` file in the staging directory records what
-has already been installed (hashed by URL line or manifest+package.json).
-On each startup only changed / new entries are re-installed. To force a
-full re-install, enable **Force reinstall on next startup** in config.
-
-State entries for URLs you remove from the list (or folders you remove
-from the drop directory) are pruned automatically.
-
-## Configuration
+## Settings
 
 Per-chat:
 
-| Field | Default | What it does |
-|---|---|---|
-| `installerEnabled` | on | Master switch. |
-| `repoUrls` | empty | One URL per line. Comma-separated also works. |
-| `scanDropFolder` | on | Also install anything found in the drop folder. |
-| `allowAnyHost` | off | Permit non-github.com hosts (GitLab, Codeberg, etc.). |
-| `autoBuild` | on | Run `npm install` + `npm run build` if a build script exists. |
-| `overwriteExisting` | on | Pass `-y` to `lms dev -i`. |
-| `reinstallEverything` | off | Ignore state and reinstall everything once. |
-| `installTimeoutSec` | 300 | Hard kill any clone/build/install after this. |
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `installerEnabled` | `true` | Master switch. When `false`, every command refuses. |
+| `installTrigger` | `false` | Legacy: off→on transition runs a pass on `repoUrls` (mostly obsolete now). |
+| `checkForUpdates` | `true` | Used by `--plugin status` / `--plugin update`. |
+| `repoUrls` | `""` | Optional default URL list for the legacy trigger path. |
+| `scanDropFolder` | `false` | Legacy: scan `dropDir` for pre-built folders. |
+| `allowAnyHost` | `false` | Allow non-GitHub git hosts. |
+| `autoBuild` | `true` | Run `npm install` + `npm run build` after cloning. |
+| `overwriteExisting` | `true` | Pass `-y` to `lms dev -i`. |
+| `reinstallEverything` | `false` | Force reinstall, ignoring cached hashes. |
+| `installTimeoutSec` | `300` | Per-step timeout. |
 
 Global:
 
-| Field | Default |
-|---|---|
+| Setting | Default |
+| --- | --- |
 | `pluginsDir` | `~/.lmstudio/extensions/plugins` |
-| `stagingDir` | `~/.lmstudio/plugin-installer/staging` |
-| `dropDir` | `~/.lmstudio/plugin-installer/drop` |
-| `gitCommand` | `git` |
-| `npmCommand` | `npm` |
-| `lmsCommand` | `lms` |
-
-## How install works under the hood
-
-LM Studio's CLI has no native "install from git URL" command. The supported
-local-install flow is `lms dev -i -y` from inside a plugin folder. This
-plugin automates that:
-
-1. `git clone --depth 1` (optionally `--branch <ref>`) into the staging dir.
-2. If `package.json` exists with a `build` script: `npm install` then
-   `npm run build` (toggle with `autoBuild`).
-3. `lms dev -i -y` inside the plugin folder.
-
-`lms dev` normally stays alive as a dev server; this plugin watches its
-output for an install / ready signal and SIGKILLs it once the install is
-confirmed, with `installTimeoutSec` as a backstop.
-
-Per-plugin failures are isolated — one bad URL won't stop the rest of the
-pass. Output goes to LM Studio's plugin log (look for `[plugin-installer]`).
-
-## Requirements
-
-`git`, `npm`, and the `lms` CLI must be on `PATH` (or set absolute paths
-in the global config).
-
-## Build & install (this plugin itself)
-
-```bash
-cd "plugin-installer"
-npm install
-npm run build
-lms dev -i -y
-```
-
-## Security notes
-
-Cloning and building a plugin runs **arbitrary code** from the repo and
-its npm dependencies the moment `npm install` runs. Only install plugins
-from sources you trust.
-
-The host allowlist (`allowAnyHost = false` by default) blocks accidental
-clones from non-GitHub hosts but is not a sandbox.
+| `stagingDir` | `~/.lmstudio/extensions/.installer` (also holds `install.log`) |
+| `dropDir` | `~/.lmstudio/extensions/.drop` |
+| `gitCommand` / `npmCommand` / `lmsCommand` | `git` / `npm` / `lms` |

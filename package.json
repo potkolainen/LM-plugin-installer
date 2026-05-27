@@ -11,7 +11,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@lmstudio/sdk": "1.4.0"
+    "@lmstudio/sdk": "1.4.0",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/node": "^20.14.8",

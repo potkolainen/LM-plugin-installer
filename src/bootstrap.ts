@@ -3,6 +3,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import {
   ensureDir,
+  getRemoteHeadSha,
   parseRepoSpec,
   pathExists,
   readManifest,
@@ -26,6 +27,8 @@ export interface InstallerSettings {
   lmsCommand: string;
   reinstall: boolean;
   scanDropFolder: boolean;
+  /** If true, run `git ls-remote` for each URL and reinstall when the upstream SHA changed. */
+  checkForUpdates: boolean;
 }
 
 export interface InstallReport {
@@ -34,13 +37,23 @@ export interface InstallReport {
   step?: string;
   error?: string;
   installedAs?: { owner?: string; name?: string };
-  skipped?: "already-installed";
+  skipped?: "already-installed" | "up-to-date";
+  updated?: boolean;
   log_tail?: string[];
 }
 
 interface InstallerState {
   /** map of source-key -> hash of last install */
-  installed: Record<string, { hash: string; at: string; plugin?: { owner?: string; name?: string } }>;
+  installed: Record<
+    string,
+    {
+      hash: string;
+      at: string;
+      plugin?: { owner?: string; name?: string };
+      /** Remote commit SHA observed at last install (for URL entries only). */
+      remoteSha?: string;
+    }
+  >;
 }
 
 const STATE_FILE = "installer-state.json";
@@ -76,17 +89,21 @@ export function parseRepoUrlList(raw: string): string[] {
     .filter((s) => s.length > 0 && !s.startsWith("#"));
 }
 
-/** Install a single GitHub URL / shorthand. */
+/** Install a single GitHub URL / shorthand. Returns the report plus the
+ * resolved remote SHA (if we managed to look one up) so the caller can
+ * record it in state for later update checks. */
 async function installFromRepo(
   spec: string,
   settings: InstallerSettings,
   log: LogFn,
-): Promise<InstallReport> {
+): Promise<{ report: InstallReport; remoteSha?: string }> {
   let parsed;
   try {
     parsed = parseRepoSpec(spec, settings.allowAnyHost);
   } catch (e: any) {
-    return { source: spec, ok: false, step: "parse", error: e?.message ?? String(e) };
+    return {
+      report: { source: spec, ok: false, step: "parse", error: e?.message ?? String(e) },
+    };
   }
 
   const timeoutMs = settings.installTimeoutSec * 1000;
@@ -112,15 +129,30 @@ async function installFromRepo(
   });
   if (cloneRes.code !== 0) {
     return {
-      source: spec,
-      ok: false,
-      step: "git clone",
-      error: `git clone exit ${cloneRes.code}${cloneRes.timedOut ? " (timeout)" : ""}`,
-      log_tail: tail.slice(),
+      report: {
+        source: spec,
+        ok: false,
+        step: "git clone",
+        error: `git clone exit ${cloneRes.code}${cloneRes.timedOut ? " (timeout)" : ""}`,
+        log_tail: tail.slice(),
+      },
     };
   }
 
-  return finishInstall(spec, targetDir, settings, wrappedLog, tail);
+  // Read the cloned commit SHA so we can detect upstream changes later.
+  let remoteSha: string | undefined;
+  const revRes = await run(settings.gitCommand, ["rev-parse", "HEAD"], {
+    cwd: targetDir,
+    timeoutMs,
+    log: wrappedLog,
+  });
+  if (revRes.code === 0) {
+    const sha = revRes.stdout.trim().split(/\s+/)[0];
+    if (sha && /^[0-9a-f]{7,40}$/i.test(sha)) remoteSha = sha;
+  }
+
+  const report = await finishInstall(spec, targetDir, settings, wrappedLog, tail);
+  return { report, remoteSha };
 }
 
 /** Install a plugin folder that already exists on disk (drop folder entry). */
@@ -165,7 +197,7 @@ async function finishInstall(
     const inst = await run(
       settings.npmCommand,
       ["install", "--no-audit", "--no-fund"],
-      { cwd: workDir, timeoutMs, log },
+      { cwd: workDir, timeoutMs, log, env: { NODE_ENV: "development" } },
     );
     if (inst.code !== 0) {
       return {
@@ -239,18 +271,63 @@ export async function runInstallPass(
     const key = `url:${spec}`;
     const hash = hashStr(spec); // re-installs if user edits the line
     const prev = state.installed[key];
-    if (!settings.reinstall && prev && prev.hash === hash) {
-      reports.push({ source: spec, ok: true, skipped: "already-installed" });
+
+    // Decide if we need to install:
+    //   - user forced reinstall
+    //   - never installed before
+    //   - URL line text changed (hash differs)
+    //   - update check is on and upstream SHA changed since last install
+    let mustInstall = settings.reinstall || !prev || prev.hash !== hash;
+    let updateReason: "new" | "edited" | "upstream-update" | "forced" | null = null;
+    if (settings.reinstall) updateReason = "forced";
+    else if (!prev) updateReason = "new";
+    else if (prev.hash !== hash) updateReason = "edited";
+
+    let latestRemoteSha: string | null = null;
+    if (!mustInstall && settings.checkForUpdates && prev?.remoteSha) {
+      let parsedForCheck;
+      try {
+        parsedForCheck = parseRepoSpec(spec, settings.allowAnyHost);
+      } catch {
+        parsedForCheck = null;
+      }
+      if (parsedForCheck) {
+        latestRemoteSha = await getRemoteHeadSha(
+          settings.gitCommand,
+          parsedForCheck.cloneUrl,
+          parsedForCheck.ref,
+          Math.min(settings.installTimeoutSec * 1000, 30_000),
+          (line) => log(`[${parsedForCheck!.shortLabel}] ${line}`),
+        );
+        if (latestRemoteSha && latestRemoteSha !== prev.remoteSha) {
+          mustInstall = true;
+          updateReason = "upstream-update";
+          log(
+            `↻ upstream update for ${spec}: ${prev.remoteSha.slice(0, 7)} → ${latestRemoteSha.slice(0, 7)}`,
+          );
+        }
+      }
+    }
+
+    if (!mustInstall) {
+      reports.push({
+        source: spec,
+        ok: true,
+        skipped: settings.checkForUpdates ? "up-to-date" : "already-installed",
+      });
       continue;
     }
-    log(`→ installing from URL: ${spec}`);
-    const report = await installFromRepo(spec, settings, log);
+
+    log(`→ installing from URL (${updateReason}): ${spec}`);
+    const { report, remoteSha } = await installFromRepo(spec, settings, log);
+    if (updateReason === "upstream-update") report.updated = true;
     reports.push(report);
     if (report.ok) {
       state.installed[key] = {
         hash,
         at: new Date().toISOString(),
         plugin: report.installedAs,
+        remoteSha: remoteSha ?? latestRemoteSha ?? prev?.remoteSha,
       };
     }
   }

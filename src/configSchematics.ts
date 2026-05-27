@@ -17,17 +17,15 @@ export const configSchematics = createConfigSchematics()
     true,
   )
   .field(
-    "repoUrls",
-    "string",
+    "checkForUpdates",
+    "boolean",
     {
-      displayName: "Plugins to install (one URL per line)",
+      displayName: "Check installed plugins for updates",
       subtitle:
-        "GitHub URLs or shorthand (owner/repo). Add /tree/<branch> to pin a branch. " +
-        "On every plugin reload, new or edited entries are cloned, built, and registered.",
-      isParagraph: true,
-      placeholder: "https://github.com/owner/repo\nowner/another-plugin",
-    } as any,
-    "",
+        "When a URL is already installed, run `git ls-remote` and reinstall if the upstream commit changed. " +
+        "Runs on every install pass (startup + manual trigger).",
+    },
+    true,
   )
   .field(
     "scanDropFolder",
