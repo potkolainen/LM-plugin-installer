@@ -1,4 +1,4 @@
-# LM Studio Plugin Installer
+# LM Studio Plugin Installer (ATM BROKEN, FIX COMING SOON)
 
 A meta-plugin for LM Studio that lets you manage other plugins by typing
 `--plugin` commands in the chat. The plugin exposes a small set of tools;
